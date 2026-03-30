@@ -427,7 +427,7 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
     if (menuGroup) menuCategoryObj.group = menuGroup;
 
     const itemDef = {
-      format_version: "1.21.10",
+      format_version: "1.20.50",
       "minecraft:item": {
         description: {
           identifier: itemId,
@@ -443,13 +443,13 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
 
     const bpManifest = {
       format_version: 2,
-      header: { name: `${itemName} BP`, description: itemDescription || `Adds ${itemName}`, uuid: bpUuid, version: [1, 0, 0], min_engine_version: [1, 21, 0] },
+      header: { name: `${itemName} BP`, description: itemDescription || `Adds ${itemName}`, uuid: bpUuid, version: [1, 0, 0], min_engine_version: [1, 20, 0] },
       modules: [{ type: "data", uuid: randomUUID(), version: [1, 0, 0] }],
     };
 
     const rpManifest = {
       format_version: 2,
-      header: { name: `${itemName} RP`, description: itemDescription || `Adds ${itemName}`, uuid: rpUuid, version: [1, 0, 0], min_engine_version: [1, 21, 0] },
+      header: { name: `${itemName} RP`, description: itemDescription || `Adds ${itemName}`, uuid: rpUuid, version: [1, 0, 0], min_engine_version: [1, 20, 0] },
       modules: [{ type: "resources", uuid: randomUUID(), version: [1, 0, 0] }],
       dependencies: [{ uuid: bpUuid, version: [1, 0, 0] }],
     };
@@ -460,18 +460,15 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
       if (f.path.includes("/recipes/") && f.path.endsWith(".json")) {
         try {
           const recipe = typeof f.content === "string" ? JSON.parse(f.content) : f.content;
-          recipe.format_version = "1.21.10";
+          recipe.format_version = "1.20.10";
           const shaped = recipe["minecraft:recipe_shaped"];
           const shapeless = recipe["minecraft:recipe_shapeless"];
 
           if (shaped) {
-            // Fix identifier
             shaped.description = { identifier: `${itemId}_recipe` };
-            // Fix tags
             if (!shaped.tags || !Array.isArray(shaped.tags)) shaped.tags = ["crafting_table"];
-            // Fix result
             shaped.result = { item: itemId, count: 1 };
-            // Ensure pattern is valid - each row must be exactly 3 chars
+            // Ensure pattern is valid 3x3
             if (shaped.pattern && Array.isArray(shaped.pattern)) {
               shaped.pattern = shaped.pattern.map(row => {
                 const r = String(row);
@@ -479,21 +476,9 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
                 if (r.length > 3) return r.substring(0, 3);
                 return r;
               });
-              // Ensure exactly 3 rows
               while (shaped.pattern.length < 3) shaped.pattern.push("   ");
               if (shaped.pattern.length > 3) shaped.pattern = shaped.pattern.slice(0, 3);
-
-              // Verify all pattern chars exist in key (except space)
-              if (shaped.key) {
-                const usedChars = new Set(shaped.pattern.join("").replace(/ /g, "").split(""));
-                const keyChars = new Set(Object.keys(shaped.key));
-                // Remove key entries not used in pattern
-                for (const k of keyChars) {
-                  if (!usedChars.has(k)) delete shaped.key[k];
-                }
-              }
             }
-            console.log("[RECIPE FIX] Pattern:", JSON.stringify(shaped.pattern), "Key:", JSON.stringify(Object.keys(shaped.key || {})));
           }
 
           if (shapeless) {
@@ -503,6 +488,7 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
           }
 
           recipeFile = { path: `behavior_pack/recipes/${safeItemName}.json`, content: JSON.stringify(recipe, null, 2) };
+          console.log("[RECIPE]", shaped ? "shaped" : "shapeless", "Pattern:", JSON.stringify(shaped?.pattern), "Key:", JSON.stringify(shaped?.key), "Result:", itemId);
         } catch (e) {
           console.error("[RECIPE ERROR]", e.message);
         }
@@ -513,7 +499,7 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
     const allText = (itemDescription + " " + extraDetails).toLowerCase();
     const effects = [];
 
-    if (/fire|burn|ignite|flame/i.test(allText)) {
+    if (/set.*on fire|fire damage|burn|ignite|flame|catches fire|sets fire/i.test(allText)) {
       const fireMatch = allText.match(/(\d+)\s*second/);
       const fireTicks = (fireMatch ? parseInt(fireMatch[1]) : 5) * 20; // seconds to ticks
       effects.push(`        target.setOnFire(${Math.ceil(fireTicks / 20)});`);
@@ -546,26 +532,13 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
       effects.push(`        target.dimension.spawnEntity("minecraft:lightning_bolt", target.location);`);
     }
 
-    // Split effects: fire must happen BEFORE damage so cooked meat drops
-    const beforeEffects = [];
-    const afterEffects = [];
-    for (const e of effects) {
-      if (e.includes("setOnFire")) {
-        beforeEffects.push(e);
-      } else {
-        afterEffects.push(e);
-      }
-    }
-
     const hasScripts = effects.length > 0;
     let scriptFile = null;
 
     if (hasScripts) {
-      let script = `import { world, system } from "@minecraft/server";\n\n`;
+      const script = `import { world } from "@minecraft/server";
 
-      // Fire goes in beforeEvents so the mob is on fire before damage kills it — drops cooked meat
-      if (beforeEffects.length > 0) {
-        script += `world.beforeEvents.entityHitEntity.subscribe((event) => {
+world.afterEvents.entityHitEntity.subscribe((event) => {
   const source = event.damagingEntity;
   const target = event.hitEntity;
   try {
@@ -573,31 +546,12 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
     if (equip) {
       const mainhand = equip.getEquipment("Mainhand");
       if (mainhand && mainhand.typeId === "${itemId}") {
-        system.run(() => {
-${beforeEffects.join("\n")}
-        });
+${effects.join("\n")}
       }
     }
   } catch (e) {}
-});\n\n`;
-      }
-
-      // Other effects go in afterEvents
-      if (afterEffects.length > 0) {
-        script += `world.afterEvents.entityHitEntity.subscribe((event) => {
-  const source = event.damagingEntity;
-  const target = event.hitEntity;
-  try {
-    const equip = source.getComponent("minecraft:equippable");
-    if (equip) {
-      const mainhand = equip.getEquipment("Mainhand");
-      if (mainhand && mainhand.typeId === "${itemId}") {
-${afterEffects.join("\n")}
-      }
-    }
-  } catch (e) {}
-});\n`;
-      }
+});
+`;
       scriptFile = { path: "behavior_pack/scripts/main.js", content: script };
 
       bpManifest.modules.push({
@@ -651,25 +605,10 @@ ${afterEffects.join("\n")}
     console.log("[TEXTURE FILE]", `resource_pack/textures/items/${safeItemName}.png`);
     console.log("[ITEM_TEXTURE.JSON]", "YES - maps", shortName, "->", `textures/items/${safeItemName}`);
     console.log("");
-    if (recipeFile) {
-      try {
-        const rData = JSON.parse(recipeFile.content);
-        const s = rData["minecraft:recipe_shaped"];
-        if (s) {
-          console.log("[RECIPE] YES - shaped");
-          console.log("  Pattern:", JSON.stringify(s.pattern));
-          console.log("  Key:", JSON.stringify(s.key));
-          console.log("  Result:", JSON.stringify(s.result));
-        } else {
-          console.log("[RECIPE] YES - shapeless");
-        }
-      } catch { console.log("[RECIPE] YES - from AI"); }
-    } else {
-      console.log("[RECIPE] NO - AI didn't generate one");
-    }
+    console.log("[RECIPE]", recipeFile ? "YES - from AI" : "NO - AI didn't generate one");
     console.log("");
     console.log("[EFFECTS SCAN] Scanning:", JSON.stringify(allText.substring(0, 100)));
-    console.log("  Fire:", /fire|burn|ignite|flame/i.test(allText) ? "DETECTED" : "not found");
+    console.log("  Fire:", /set.*on fire|fire damage|burn|ignite|flame|catches fire|sets fire/i.test(allText) ? "DETECTED" : "not found");
     console.log("  Poison:", /poison/i.test(allText) ? "DETECTED" : "not found");
     console.log("  Wither:", /wither/i.test(allText) ? "DETECTED" : "not found");
     console.log("  Slowness:", /slow|slowness/i.test(allText) ? "DETECTED" : "not found");

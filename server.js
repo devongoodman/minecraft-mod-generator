@@ -1,0 +1,688 @@
+const express = require("express");
+const { GoogleGenAI } = require("@google/genai");
+const archiver = require("archiver");
+const path = require("path");
+const { PNG } = require("pngjs");
+
+const app = express();
+app.use(express.json({ limit: "10mb" }));
+app.use(express.static(path.join(__dirname, "public")));
+
+const PORT = 3001;
+
+// Convert a 16x16 grid of hex colors to a PNG base64 string
+function pixelGridToPng(grid) {
+  const png = new PNG({ width: 16, height: 16 });
+  for (let y = 0; y < 16; y++) {
+    for (let x = 0; x < 16; x++) {
+      const hex = (grid[y] && grid[y][x]) || "00000000";
+      const idx = (16 * y + x) * 4;
+      if (hex === "." || hex === "00000000" || hex === "transparent") {
+        png.data[idx] = 0;
+        png.data[idx + 1] = 0;
+        png.data[idx + 2] = 0;
+        png.data[idx + 3] = 0;
+      } else {
+        const clean = hex.replace("#", "");
+        const r = parseInt(clean.substring(0, 2), 16) || 0;
+        const g = parseInt(clean.substring(2, 4), 16) || 0;
+        const b = parseInt(clean.substring(4, 6), 16) || 0;
+        const a = clean.length === 8 ? (parseInt(clean.substring(6, 8), 16) || 255) : 255;
+        png.data[idx] = r;
+        png.data[idx + 1] = g;
+        png.data[idx + 2] = b;
+        png.data[idx + 3] = a;
+      }
+    }
+  }
+  const buffer = PNG.sync.write(png);
+  return buffer.toString("base64");
+}
+
+// Generate a texture image for the item using text AI to describe pixels
+app.post("/api/generate-texture", async (req, res) => {
+  const { itemName, itemAppearance, apiKey } = req.body;
+
+  if (!itemName || !apiKey) {
+    return res.status(400).json({ error: "Missing item name or API key" });
+  }
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+
+    console.log("Generating texture via pixel grid...");
+
+    // Use compact format: 16 lines of 16 hex codes separated by commas
+    // "." = transparent, otherwise 6-char hex. Much less tokens than JSON arrays.
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Create a 16x16 pixel art Minecraft item texture for: "${itemName}".
+Appearance: ${itemAppearance || itemName}.
+
+Output 16 lines. Each line has 16 values separated by commas.
+Each value is either . (transparent) or a 6-char hex color (no # symbol).
+
+Example of a red sword (for reference only):
+.,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+.,.,.,.,.,.,.,.,.,.,.,.,.,FF0000,CC0000,.
+.,.,.,.,.,.,.,.,.,.,.,.,FF0000,FF3333,.,.
+.,.,.,.,.,.,.,.,.,.,.,FF0000,FF3333,.,.,.
+.,.,.,.,.,.,.,.,.,.,FF0000,FF3333,.,.,.,.
+.,.,.,.,.,.,.,.,.,FF0000,FF3333,.,.,.,.,.
+.,.,.,.,.,.,.,.,FF0000,FF3333,.,.,.,.,.,.
+.,.,.,.,.,.,.,FF0000,FF3333,.,.,.,.,.,.,.
+.,.,.,.,.,.,FF0000,FF3333,.,.,.,.,.,.,.,.
+.,.,.,.,.,FF0000,FF3333,.,.,.,.,.,.,.,.,.
+.,.,.,.,8B4513,CC0000,.,.,.,.,.,.,.,.,.,.
+.,.,.,8B4513,DAA520,.,.,.,.,.,.,.,.,.,.,.
+.,.,8B4513,DAA520,.,.,.,.,.,.,.,.,.,.,.,.
+.,8B4513,DAA520,.,.,.,.,.,.,.,.,.,.,.,.,.
+8B4513,DAA520,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+8B4513,.,.,.,.,.,.,.,.,.,.,.,.,.,.,.
+
+Now generate for "${itemName}". Swords go diagonal, tools vertical, armor shaped. Use color shading. Most pixels should be transparent (.).
+Output EXACTLY 16 lines of 16 comma-separated values. Nothing else.`,
+      config: {
+        maxOutputTokens: 3000,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
+    });
+
+    let imageBase64 = null;
+    const text = response.candidates[0].content.parts[0].text;
+    console.log("AI pixel response length:", text.length);
+    try {
+      let cleaned = text.trim();
+      // Strip markdown fences
+      if (cleaned.startsWith("```")) {
+        cleaned = cleaned.replace(/^```\w*\n?/, "").replace(/\n?```$/, "");
+      }
+      // Parse CSV-style lines into a grid
+      const lines = cleaned.split("\n").map(l => l.trim()).filter(l => l.length > 0 && l.includes(","));
+      console.log("Parsed", lines.length, "lines");
+      if (lines.length >= 16) {
+        const grid = lines.slice(0, 16).map(line => {
+          return line.split(",").map(v => v.trim()).slice(0, 16);
+        });
+        // Pad rows to 16 if needed
+        for (const row of grid) {
+          while (row.length < 16) row.push(".");
+        }
+        imageBase64 = pixelGridToPng(grid);
+        console.log("Texture generated from pixel grid successfully");
+      } else {
+        console.error("Not enough lines, got:", lines.length);
+      }
+    } catch (parseErr) {
+      console.error("Failed to parse pixel grid:", parseErr.message);
+      console.error("Raw response (first 500 chars):", text.substring(0, 500));
+    }
+
+    res.json({ imageBase64 });
+  } catch (err) {
+    console.error("Texture generation error:", err.message);
+    res.json({ imageBase64: null, warning: err.message });
+  }
+});
+
+app.post("/api/generate", async (req, res) => {
+  const { itemName, fileName, itemDescription, itemAppearance, extraDetails, edition, apiKey, textureBase64 } = req.body;
+
+  if (!itemName || !edition || !apiKey) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+
+  const itemDetails = `
+Item/Block/Entity Name: ${itemName}
+File/Mod Name: ${fileName || itemName.toLowerCase().replace(/\s+/g, "-")}
+Description: ${itemDescription || "A custom item"}
+Appearance: ${itemAppearance || "Default Minecraft style"}
+Additional Details: ${extraDetails || "None"}
+${textureBase64 ? "NOTE: A texture image has already been generated and will be included automatically. Include the correct texture path in your files but do NOT generate image content - just put a placeholder string for any .png file content." : "NOTE: No texture was generated. Do NOT include any .png files."}`;
+
+  const systemPrompt = edition === "java"
+    ? `You are an expert Minecraft Java Edition mod developer. You generate complete, working mod projects using Forge (1.20.x).
+
+When generating a mod, output ALL files needed as a JSON array of objects with "path" and "content" keys.
+
+Always include:
+- build.gradle
+- settings.gradle
+- gradle.properties
+- src/main/java/ source files (package based on mod id)
+- src/main/resources/META-INF/mods.toml
+- src/main/resources/pack.mcmeta
+
+Use modern Forge conventions (1.20.x). Make the mod functional and complete.
+Output ONLY the JSON array, no markdown fences, no explanation.`
+    : `You are an expert Minecraft Bedrock Edition add-on developer. You generate complete, working behavior packs and resource packs.
+
+When generating an add-on, output ALL files needed as a JSON array of objects with "path" and "content" keys.
+
+=== ITEM DEFINITION FORMAT (behavior_pack/items/<id>.json) ===
+You MUST use format_version "1.20.50" for items. Here is an example of a custom sword item:
+{
+  "format_version": "1.20.50",
+  "minecraft:item": {
+    "description": {
+      "identifier": "mymod:my_sword",
+      "menu_category": {
+        "category": "equipment",
+        "group": "itemGroup.name.sword"
+      }
+    },
+    "components": {
+      "minecraft:display_name": {
+        "value": "My Sword"
+      },
+      "minecraft:icon": {
+        "textures": {
+          "default": "mymod_my_sword"
+        }
+      },
+      "minecraft:max_stack_size": 1,
+      "minecraft:damage": {
+        "value": 10
+      },
+      "minecraft:hand_equipped": true,
+      "minecraft:durability": {
+        "max_durability": 500
+      },
+      "minecraft:enchantable": {
+        "value": 14,
+        "slot": "sword"
+      },
+      "minecraft:repairable": {
+        "repair_items": [
+          {
+            "items": ["minecraft:diamond"],
+            "repair_amount": "context.other->q.remaining_durability + 0.05 * context.other->q.max_durability"
+          }
+        ]
+      }
+    }
+  }
+}
+
+CRITICAL ITEM RULES:
+- ALWAYS include "minecraft:display_name" with the item's name so it shows in-game
+- ALWAYS include "minecraft:icon" pointing to the texture short name
+- If the item does damage, set "minecraft:max_stack_size" to 1
+- If the item is a weapon/tool, set "minecraft:hand_equipped" to true
+- Use "minecraft:damage" for attack damage. IMPORTANT: Bedrock clamps damage to 231 max.
+  If the user wants damage higher than 231 (e.g. "one shot kill", "1000 damage", "instant kill"),
+  you MUST use a script approach instead. Add a script module to the behavior pack manifest and
+  create a script file like behavior_pack/scripts/main.js that listens for entity hit events:
+
+  import { world } from "@minecraft/server";
+  world.afterEvents.entityHitEntity.subscribe((event) => {
+    const source = event.damagingEntity;
+    const target = event.hitEntity;
+    const equip = source.getComponent("minecraft:equippable");
+    if (equip) {
+      const mainhand = equip.getEquipment("Mainhand");
+      if (mainhand && mainhand.typeId === "mymod:my_sword") {
+        target.applyDamage(1000);
+      }
+    }
+  });
+
+  When using scripts, the behavior pack manifest needs:
+  - A script module: { "type": "script", "uuid": "<uuid>", "version": [1,0,0], "entry": "scripts/main.js", "language": "javascript" }
+  - A dependency on @minecraft/server: { "module_name": "@minecraft/server", "version": "1.17.0-beta" }
+  Set "minecraft:damage" to 1 on the item itself (the script handles the real damage).
+- Use "minecraft:durability" for how long it lasts
+- Use "minecraft:food" for food items with saturation/nutrition
+- Use "minecraft:armor" for armor pieces
+- The identifier must be "namespace:item_name" format (e.g. "mymod:ruby_sword")
+- ALWAYS include menu_category in the description so the item appears in creative inventory
+- Valid categories: "construction", "nature", "equipment", "items", "none"
+- Valid groups for equipment: "itemGroup.name.sword", "itemGroup.name.axe", "itemGroup.name.pickaxe", "itemGroup.name.shovel", "itemGroup.name.hoe"
+- The namespace should be simple and short, like the mod name in lowercase with no spaces
+- DO NOT use scripts unless absolutely necessary (e.g. damage > 231). Scripts require experimental mode which many users don't enable. Prefer pure JSON data-driven definitions.
+
+=== TEXTURE WIRING (resource_pack/textures/item_texture.json) ===
+This file maps texture short names to texture file paths. ALWAYS include this:
+{
+  "resource_pack_name": "My Addon",
+  "texture_name": "atlas.items",
+  "texture_data": {
+    "mymod_my_sword": {
+      "textures": "textures/items/my_sword"
+    }
+  }
+}
+The short name (e.g. "mymod_my_sword") must match what you put in "minecraft:icon".
+The texture path must NOT include the .png extension.
+ALWAYS include the texture PNG at: resource_pack/textures/items/<item_name>.png
+Use "TEXTURE_PLACEHOLDER" as the content for .png files.
+
+=== RECIPE FORMAT (behavior_pack/recipes/<id>.json) ===
+If crafting is described, include a recipe file:
+{
+  "format_version": "1.20.50",
+  "minecraft:recipe_shaped": {
+    "description": { "identifier": "mymod:my_sword_recipe" },
+    "tags": ["crafting_table"],
+    "pattern": [" G ", " G ", " S "],
+    "key": {
+      "G": { "item": "minecraft:diamond" },
+      "S": { "item": "minecraft:stick" }
+    },
+    "result": { "item": "mymod:my_sword", "count": 1 }
+  }
+}
+
+=== MANIFEST FORMAT ===
+behavior_pack/manifest.json:
+{
+  "format_version": 2,
+  "header": {
+    "name": "Addon Name BP",
+    "description": "Description",
+    "uuid": "<valid random UUID v4>",
+    "version": [1, 0, 0],
+    "min_engine_version": [1, 20, 0]
+  },
+  "modules": [{ "type": "data", "uuid": "<different UUID>", "version": [1, 0, 0] }]
+}
+
+resource_pack/manifest.json:
+{
+  "format_version": 2,
+  "header": {
+    "name": "Addon Name RP",
+    "description": "Description",
+    "uuid": "<valid random UUID v4>",
+    "version": [1, 0, 0],
+    "min_engine_version": [1, 20, 0]
+  },
+  "modules": [{ "type": "resources", "uuid": "<different UUID>", "version": [1, 0, 0] }],
+  "dependencies": [{ "uuid": "<behavior pack header uuid>", "version": [1, 0, 0] }]
+}
+
+=== RULES ===
+- Every UUID must be unique valid v4 (8-4-4-4-12 hex)
+- Manifest version/min_engine_version must be integer arrays, format_version must be integer 2
+- Item format_version must be the STRING "1.20.50"
+- File paths must start with behavior_pack/ or resource_pack/
+- For .png files, use "TEXTURE_PLACEHOLDER" as content
+- ALWAYS include: both manifests, item definition, item_texture.json, texture .png, and recipe if crafting was described
+- DO NOT use scripts unless absolutely necessary - prefer JSON data-driven definitions
+
+Output ONLY the JSON array, no markdown fences, no explanation.`;
+
+  try {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    let fullResponse = "";
+
+    const stream = await ai.models.generateContentStream({
+      model: "gemini-2.5-flash",
+      contents: `Generate a Minecraft ${edition === "java" ? "Java Edition Forge" : "Bedrock Edition"} mod/add-on with these details:\n${itemDetails}`,
+      config: {
+        systemInstruction: systemPrompt,
+        maxOutputTokens: 16000,
+      },
+    });
+
+    for await (const chunk of stream) {
+      const text = chunk.text;
+      if (text) {
+        fullResponse += text;
+        res.write(`data: ${JSON.stringify({ type: "progress", text })}\n\n`);
+      }
+    }
+
+    // Parse the generated files
+    let files;
+    try {
+      let cleaned = fullResponse.trim();
+      if (cleaned.startsWith("```")) {
+        cleaned = cleaned.replace(/^```\w*\n?/, "").replace(/\n?```$/, "");
+      }
+      files = JSON.parse(cleaned);
+    } catch {
+      res.write(`data: ${JSON.stringify({ type: "error", error: "Failed to parse AI response. Try again." })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // === BUILD ALL CRITICAL FILES FROM SCRATCH ===
+    // The AI output is only used for the recipe pattern/ingredients.
+    // Everything else is built server-side to guarantee correctness.
+
+    const safeItemName = itemName.toLowerCase().replace(/[^a-z0-9]/g, "_");
+    const namespace = (fileName || itemName).toLowerCase().replace(/[^a-z0-9]/g, "") || "mod";
+    const itemId = `${namespace}:${safeItemName}`;
+    const shortName = `${namespace}_${safeItemName}`;
+
+    // Parse damage from extraDetails
+    let damage = 7; // default sword damage
+    const dmgMatch = (extraDetails || "").match(/(\d+)\s*damage/i);
+    if (dmgMatch) damage = Math.min(parseInt(dmgMatch[1]), 231);
+
+    // Parse durability from extraDetails
+    let durability = 500;
+    const durMatch = (extraDetails || "").match(/(\d+)\s*durability/i);
+    if (durMatch) durability = parseInt(durMatch[1]);
+
+    // Detect item type from name/description
+    const lowerName = itemName.toLowerCase();
+    const lowerDesc = (itemDescription + " " + extraDetails).toLowerCase();
+    const isSword = /sword|blade|katana|dagger|saber/i.test(lowerName);
+    const isAxe = /\baxe\b/i.test(lowerName);
+    const isPickaxe = /pick/i.test(lowerName);
+    const isShovel = /shovel|spade/i.test(lowerName);
+    const isHoe = /\bhoe\b/i.test(lowerName);
+    const isTool = isSword || isAxe || isPickaxe || isShovel || isHoe;
+    const isFood = /food|eat|hunger|saturation/i.test(lowerDesc);
+    const isArmor = /armor|helmet|chestplate|leggings|boots/i.test(lowerName);
+
+    let menuCategory = "items";
+    let menuGroup = "";
+    if (isSword) { menuCategory = "equipment"; menuGroup = "itemGroup.name.sword"; }
+    else if (isAxe) { menuCategory = "equipment"; menuGroup = "itemGroup.name.axe"; }
+    else if (isPickaxe) { menuCategory = "equipment"; menuGroup = "itemGroup.name.pickaxe"; }
+    else if (isShovel) { menuCategory = "equipment"; menuGroup = "itemGroup.name.shovel"; }
+    else if (isHoe) { menuCategory = "equipment"; menuGroup = "itemGroup.name.hoe"; }
+    else if (isArmor) { menuCategory = "equipment"; }
+
+    // Build item components
+    const components = {
+      "minecraft:display_name": { value: itemName },
+      "minecraft:icon": { textures: { default: shortName } },
+    };
+
+    if (isTool || isArmor) {
+      components["minecraft:max_stack_size"] = 1;
+      components["minecraft:hand_equipped"] = true;
+      components["minecraft:damage"] = { value: damage };
+      components["minecraft:durability"] = { max_durability: durability };
+      components["minecraft:enchantable"] = { value: 14, slot: isSword ? "sword" : (isAxe ? "axe" : "sword") };
+    }
+
+    if (isFood) {
+      const nutritionMatch = lowerDesc.match(/(\d+)\s*(?:nutrition|hunger)/);
+      const saturationMatch = lowerDesc.match(/(\d+(?:\.\d+)?)\s*saturation/);
+      components["minecraft:food"] = {
+        nutrition: nutritionMatch ? parseInt(nutritionMatch[1]) : 4,
+        saturation_modifier: saturationMatch ? parseFloat(saturationMatch[1]) : 0.6,
+        can_always_eat: false,
+      };
+      components["minecraft:use_animation"] = "eat";
+      components["minecraft:max_stack_size"] = 64;
+    }
+
+    if (!isTool && !isArmor && !isFood) {
+      components["minecraft:max_stack_size"] = 64;
+    }
+
+    // Build the item definition
+    const menuCategoryObj = { category: menuCategory };
+    if (menuGroup) menuCategoryObj.group = menuGroup;
+
+    const itemDef = {
+      format_version: "1.21.10",
+      "minecraft:item": {
+        description: {
+          identifier: itemId,
+          menu_category: menuCategoryObj,
+        },
+        components,
+      },
+    };
+
+    // Build manifests
+    const bpUuid = randomUUID();
+    const rpUuid = randomUUID();
+
+    const bpManifest = {
+      format_version: 2,
+      header: { name: `${itemName} BP`, description: itemDescription || `Adds ${itemName}`, uuid: bpUuid, version: [1, 0, 0], min_engine_version: [1, 21, 0] },
+      modules: [{ type: "data", uuid: randomUUID(), version: [1, 0, 0] }],
+    };
+
+    const rpManifest = {
+      format_version: 2,
+      header: { name: `${itemName} RP`, description: itemDescription || `Adds ${itemName}`, uuid: rpUuid, version: [1, 0, 0], min_engine_version: [1, 21, 0] },
+      modules: [{ type: "resources", uuid: randomUUID(), version: [1, 0, 0] }],
+      dependencies: [{ uuid: bpUuid, version: [1, 0, 0] }],
+    };
+
+    // Extract recipe and scripts from AI output
+    let recipeFile = null;
+    const scriptFiles = [];
+    let hasScripts = false;
+
+    for (const f of files) {
+      if (f.path.includes("/recipes/") && f.path.endsWith(".json")) {
+        try {
+          const recipe = typeof f.content === "string" ? JSON.parse(f.content) : f.content;
+          recipe.format_version = "1.21.10";
+          const shaped = recipe["minecraft:recipe_shaped"];
+          const shapeless = recipe["minecraft:recipe_shapeless"];
+          if (shaped?.result) shaped.result.item = itemId;
+          if (shapeless?.result) shapeless.result.item = itemId;
+          recipeFile = { path: `behavior_pack/recipes/${safeItemName}.json`, content: JSON.stringify(recipe, null, 2) };
+        } catch {}
+      }
+      // Keep script files from the AI — they handle effects like fire, knockback, etc.
+      if (f.path.includes("/scripts/") && (f.path.endsWith(".js") || f.path.endsWith(".ts"))) {
+        // Fix the item identifier in the script to match our item
+        let scriptContent = typeof f.content === "string" ? f.content : JSON.stringify(f.content);
+        // Replace any item ID references in the script with our correct one
+        scriptContent = scriptContent.replace(/["'][a-z_]+:[a-z_]+["']/g, (match) => {
+          // Only replace if it looks like a custom item ID (not minecraft: namespace)
+          if (!match.includes("minecraft:")) return `"${itemId}"`;
+          return match;
+        });
+        scriptFiles.push({ ...f, content: scriptContent });
+        hasScripts = true;
+      }
+    }
+
+    // If scripts exist, add script module and @minecraft/server dependency to BP manifest
+    if (hasScripts) {
+      bpManifest.modules.push({
+        type: "script",
+        uuid: randomUUID(),
+        version: [1, 0, 0],
+        entry: "scripts/main.js",
+        language: "javascript",
+      });
+      bpManifest.dependencies = [
+        { module_name: "@minecraft/server", version: "1.17.0-beta" },
+      ];
+    }
+
+    // Build final file list
+    files = [
+      { path: "behavior_pack/manifest.json", content: JSON.stringify(bpManifest, null, 2) },
+      { path: `behavior_pack/items/${safeItemName}.json`, content: JSON.stringify(itemDef, null, 2) },
+      { path: "resource_pack/manifest.json", content: JSON.stringify(rpManifest, null, 2) },
+      { path: "resource_pack/textures/item_texture.json", content: JSON.stringify({
+        resource_pack_name: fileName || itemName,
+        texture_name: "atlas.items",
+        texture_data: { [shortName]: { textures: `textures/items/${safeItemName}` } }
+      }, null, 2) },
+    ];
+
+    // Add recipe if AI provided one
+    if (recipeFile) files.push(recipeFile);
+
+    // Add script files from AI
+    for (const sf of scriptFiles) files.push(sf);
+
+    // Add texture
+    if (textureBase64) {
+      files.push({ path: `resource_pack/textures/items/${safeItemName}.png`, content: textureBase64, isBinary: true });
+    }
+
+    console.log("Built pack. Item:", itemId, "Damage:", damage, "Durability:", durability, "Scripts:", hasScripts, "Has texture:", !!textureBase64);
+
+    res.write(`data: ${JSON.stringify({ type: "done", files })}\n\n`);
+    res.end();
+  } catch (err) {
+    const msg = err.message || "Unknown error";
+    if (!res.headersSent) {
+      res.status(500).json({ error: msg });
+    } else {
+      res.write(`data: ${JSON.stringify({ type: "error", error: msg })}\n\n`);
+      res.end();
+    }
+  }
+});
+
+function toBuffer(content, isBinary) {
+  if (Buffer.isBuffer(content)) return content;
+  if (isBinary) return Buffer.from(content, "base64");
+  if (typeof content === "string") return Buffer.from(content, "utf-8");
+  return Buffer.from(JSON.stringify(content, null, 2), "utf-8");
+}
+
+function randomUUID() {
+  const h = () => Math.floor(Math.random() * 16).toString(16);
+  const s = (n) => Array.from({ length: n }, h).join("");
+  return `${s(8)}-${s(4)}-4${s(3)}-${(8 + Math.floor(Math.random() * 4)).toString(16)}${s(3)}-${s(12)}`;
+}
+
+function fixManifest(files) {
+  const bpHeaderUuid = randomUUID();
+  const rpHeaderUuid = randomUUID();
+
+  return files.map(file => {
+    if (!file.path.endsWith("manifest.json")) return file;
+
+    let manifest;
+    try {
+      manifest = typeof file.content === "string" ? JSON.parse(file.content) : file.content;
+    } catch {
+      manifest = {};
+    }
+
+    const isBP = file.path.startsWith("behavior_pack/");
+    const isRP = file.path.startsWith("resource_pack/");
+
+    manifest.format_version = 2;
+
+    if (!manifest.header || typeof manifest.header !== "object") {
+      manifest.header = {};
+    }
+    manifest.header.name = manifest.header.name || (isBP ? "Behavior Pack" : "Resource Pack");
+    manifest.header.description = manifest.header.description || "Generated by Minecraft Mod Generator";
+    manifest.header.uuid = (typeof manifest.header.uuid === "string" && manifest.header.uuid.length === 36)
+      ? manifest.header.uuid
+      : (isBP ? bpHeaderUuid : rpHeaderUuid);
+    manifest.header.version = Array.isArray(manifest.header.version)
+      ? manifest.header.version.map(v => parseInt(v) || 0)
+      : [1, 0, 0];
+    manifest.header.min_engine_version = Array.isArray(manifest.header.min_engine_version)
+      ? manifest.header.min_engine_version.map(v => parseInt(v) || 0)
+      : [1, 20, 0];
+
+    if (!Array.isArray(manifest.modules) || manifest.modules.length === 0) {
+      manifest.modules = [{
+        description: isBP ? "Behavior pack data" : "Resource pack resources",
+        type: isBP ? "data" : "resources",
+        uuid: randomUUID(),
+        version: [1, 0, 0],
+      }];
+    } else {
+      manifest.modules = manifest.modules.map(mod => ({
+        ...mod,
+        type: mod.type || (isBP ? "data" : "resources"),
+        uuid: (typeof mod.uuid === "string" && mod.uuid.length === 36) ? mod.uuid : randomUUID(),
+        version: Array.isArray(mod.version) ? mod.version.map(v => parseInt(v) || 0) : [1, 0, 0],
+      }));
+    }
+
+    if (isRP) {
+      const bpFile = files.find(f => f.path.startsWith("behavior_pack/") && f.path.endsWith("manifest.json"));
+      let bpUuid = bpHeaderUuid;
+      if (bpFile) {
+        try {
+          const bpManifest = typeof bpFile.content === "string" ? JSON.parse(bpFile.content) : bpFile.content;
+          if (bpManifest.header && typeof bpManifest.header.uuid === "string" && bpManifest.header.uuid.length === 36) {
+            bpUuid = bpManifest.header.uuid;
+          }
+        } catch {}
+      }
+      manifest.dependencies = [{ uuid: bpUuid, version: [1, 0, 0] }];
+    }
+
+    return { ...file, content: JSON.stringify(manifest, null, 2) };
+  });
+}
+
+// Download files as zip / mcaddon / mcpack
+app.post("/api/download", async (req, res) => {
+  const { files, modName, edition } = req.body;
+  if (!files || !Array.isArray(files)) {
+    return res.status(400).json({ error: "No files provided" });
+  }
+
+  const safeName = (modName || "minecraft-mod").replace(/[^a-zA-Z0-9_-]/g, "-");
+  const fixedFiles = edition === "bedrock" ? fixManifest(files) : files;
+
+  if (edition === "bedrock") {
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="${safeName}.mcaddon"`);
+
+    const archive = archiver("zip", { zlib: { level: 6 } });
+    archive.pipe(res);
+
+    const bpFiles = fixedFiles.filter(f => f.path.startsWith("behavior_pack/"));
+    const rpFiles = fixedFiles.filter(f => f.path.startsWith("resource_pack/"));
+
+    if (bpFiles.length > 0) {
+      const bpArchive = archiver("zip", { zlib: { level: 6 } });
+      const bpChunks = [];
+      bpArchive.on("data", chunk => bpChunks.push(chunk));
+      await new Promise((resolve) => {
+        bpArchive.on("end", resolve);
+        for (const file of bpFiles) {
+          bpArchive.append(toBuffer(file.content, file.isBinary), { name: file.path.replace(/^behavior_pack\//, "") });
+        }
+        bpArchive.finalize();
+      });
+      archive.append(Buffer.concat(bpChunks), { name: `${safeName}_BP.mcpack` });
+    }
+
+    if (rpFiles.length > 0) {
+      const rpArchive = archiver("zip", { zlib: { level: 6 } });
+      const rpChunks = [];
+      rpArchive.on("data", chunk => rpChunks.push(chunk));
+      await new Promise((resolve) => {
+        rpArchive.on("end", resolve);
+        for (const file of rpFiles) {
+          rpArchive.append(toBuffer(file.content, file.isBinary), { name: file.path.replace(/^resource_pack\//, "") });
+        }
+        rpArchive.finalize();
+      });
+      archive.append(Buffer.concat(rpChunks), { name: `${safeName}_RP.mcpack` });
+    }
+
+    await archive.finalize();
+  } else {
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${safeName}.zip"`);
+
+    const archive = archiver("zip", { zlib: { level: 6 } });
+    archive.pipe(res);
+
+    for (const file of fixedFiles) {
+      archive.append(toBuffer(file.content, file.isBinary), { name: file.path });
+    }
+
+    await archive.finalize();
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`Minecraft Mod Generator running at http://localhost:${PORT}`);
+});

@@ -1,0 +1,16 @@
+{
+  "name": "minecraft-mod-generator",
+  "version": "1.0.0",
+  "description": "Local AI-powered Minecraft mod generator",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "@google/genai": "^1.47.0",
+    "archiver": "^7.0.1",
+    "express": "^4.21.0",
+    "pngjs": "^7.0.0"
+  }
+}

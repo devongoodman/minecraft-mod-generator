@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Minecraft Mod Generator</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem 1rem;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 0.25rem;
+      background: linear-gradient(135deg, #4ade80, #22d3ee);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #888;
+      margin-bottom: 2rem;
+    }
+
+    .api-key-section {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1rem;
+      border: 1px solid #2a2a4a;
+    }
+
+    .api-key-section label {
+      font-size: 0.85rem;
+      color: #aaa;
+      display: block;
+      margin-bottom: 0.5rem;
+    }
+
+    .api-key-section input {
+      width: 100%;
+      padding: 0.6rem 0.75rem;
+      background: #0f1629;
+      border: 1px solid #333;
+      border-radius: 8px;
+      color: #eee;
+      font-size: 0.9rem;
+      font-family: monospace;
+    }
+
+    .form-card {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 1.5rem;
+      border: 1px solid #2a2a4a;
+    }
+
+    .edition-toggle {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.25rem;
+    }
+
+    .edition-btn {
+      flex: 1;
+      padding: 0.75rem;
+      border: 2px solid #333;
+      background: #0f1629;
+      color: #aaa;
+      border-radius: 10px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+
+    .edition-btn:hover { border-color: #555; color: #ddd; }
+    .edition-btn.active {
+      border-color: #4ade80;
+      color: #4ade80;
+      background: #0f2a1e;
+    }
+
+    .edition-btn .icon { font-size: 1.5rem; display: block; margin-bottom: 0.25rem; }
+
+    .field-group {
+      margin-bottom: 1rem;
+    }
+
+    .field-group label {
+      display: block;
+      font-size: 0.85rem;
+      color: #aaa;
+      margin-bottom: 0.35rem;
+    }
+
+    .field-group input,
+    .field-group textarea {
+      width: 100%;
+      padding: 0.7rem 0.85rem;
+      background: #0f1629;
+      border: 1px solid #333;
+      border-radius: 10px;
+      color: #eee;
+      font-size: 0.95rem;
+      font-family: inherit;
+    }
+
+    .field-group textarea {
+      min-height: 70px;
+      resize: vertical;
+    }
+
+    .field-group input:focus,
+    .field-group textarea:focus,
+    .api-key-section input:focus {
+      outline: none;
+      border-color: #4ade80;
+    }
+
+    .field-group input::placeholder,
+    .field-group textarea::placeholder { color: #555; }
+
+    .generate-btn {
+      width: 100%;
+      padding: 0.85rem;
+      background: linear-gradient(135deg, #4ade80, #22d3ee);
+      color: #000;
+      font-weight: 700;
+      font-size: 1rem;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      margin-top: 0.5rem;
+    }
+
+    .generate-btn:hover { opacity: 0.9; }
+    .generate-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .output-section {
+      margin-top: 1.5rem;
+      display: none;
+    }
+
+    .output-section.visible { display: block; }
+
+    .progress-bar {
+      height: 3px;
+      background: #2a2a4a;
+      border-radius: 2px;
+      margin-bottom: 1rem;
+      overflow: hidden;
+    }
+
+    .progress-bar .fill {
+      height: 100%;
+      background: linear-gradient(90deg, #4ade80, #22d3ee);
+      width: 0%;
+      transition: width 0.3s;
+    }
+
+    .status { color: #888; font-size: 0.9rem; margin-bottom: 1rem; }
+
+    .texture-preview {
+      text-align: center;
+      margin-bottom: 1rem;
+    }
+
+    .texture-preview img {
+      width: 128px;
+      height: 128px;
+      image-rendering: pixelated;
+      border: 2px solid #2a2a4a;
+      border-radius: 8px;
+      background: #0f1629;
+    }
+
+    .texture-preview p {
+      color: #888;
+      font-size: 0.85rem;
+      margin-top: 0.5rem;
+    }
+
+    .file-list {
+      background: #16213e;
+      border-radius: 12px;
+      border: 1px solid #2a2a4a;
+      overflow: hidden;
+    }
+
+    .file-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid #2a2a4a;
+    }
+
+    .file-header h3 { font-size: 1rem; }
+
+    .download-btn {
+      padding: 0.5rem 1.25rem;
+      background: #4ade80;
+      color: #000;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+
+    .download-btn:hover { opacity: 0.9; }
+
+    .file-item {
+      padding: 0.6rem 1.25rem;
+      border-bottom: 1px solid #1a1a3a;
+      font-family: monospace;
+      font-size: 0.85rem;
+      color: #aaa;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .file-item:hover { background: #1a2744; }
+    .file-item:last-child { border-bottom: none; }
+
+    .file-preview {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.3s;
+    }
+
+    .file-preview.open { max-height: 600px; overflow: auto; }
+
+    .file-preview pre {
+      padding: 0.75rem 1.25rem;
+      background: #0a0f1e;
+      font-size: 0.8rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: #8be9fd;
+    }
+
+    .stream-output {
+      background: #0f1629;
+      border-radius: 10px;
+      padding: 1rem;
+      font-family: monospace;
+      font-size: 0.8rem;
+      max-height: 200px;
+      overflow-y: auto;
+      color: #666;
+      margin-bottom: 1rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Minecraft Mod Generator</h1>
+    <p class="subtitle">Fill in the details and AI will build your mod</p>
+
+    <div class="api-key-section">
+      <label>Google Gemini API Key (stored locally in your browser only)</label>
+      <input type="password" id="apiKey" placeholder="AIza..." />
+    </div>
+
+    <div class="form-card">
+      <div class="edition-toggle">
+        <button class="edition-btn active" data-edition="java" onclick="selectEdition('java')">
+          <span class="icon">&#9881;</span> Java Edition
+        </button>
+        <button class="edition-btn" data-edition="bedrock" onclick="selectEdition('bedrock')">
+          <span class="icon">&#9878;</span> Bedrock Edition
+        </button>
+      </div>
+
+      <div class="field-group">
+        <label>Item / Block / Entity Name</label>
+        <input type="text" id="itemName" placeholder="e.g. Ruby Sword, Ender Staff, Copper Golem" />
+      </div>
+
+      <div class="field-group">
+        <label>File Name (what the mod/add-on file is called)</label>
+        <input type="text" id="fileName" placeholder="e.g. ruby-tools, ender-magic, copper-mobs" />
+      </div>
+
+      <div class="field-group">
+        <label>Description (what it does, how it's crafted)</label>
+        <textarea id="itemDescription" placeholder="e.g. A powerful sword crafted from ruby gems and blaze rods. Crafted with 2 ruby gems on top and 1 blaze rod on the bottom in the crafting table."></textarea>
+      </div>
+
+      <div class="field-group">
+        <label>Appearance (how the item/block/entity should look)</label>
+        <textarea id="itemAppearance" placeholder="e.g. A bright red sword with a golden hilt and glowing enchantment particles. The blade has a diamond-shaped ruby embedded in it."></textarea>
+      </div>
+
+      <div class="field-group">
+        <label>Additional Details (damage, effects, behavior, etc.)</label>
+        <textarea id="extraDetails" placeholder="e.g. Deals 12 damage, sets enemies on fire for 5 seconds, has 500 durability, gives the player fire resistance when held"></textarea>
+      </div>
+
+      <button class="generate-btn" id="generateBtn" onclick="generate()">Generate Mod</button>
+    </div>
+
+    <div class="output-section" id="output">
+      <div class="progress-bar"><div class="fill" id="progressFill"></div></div>
+      <div class="status" id="status">Generating...</div>
+      <div class="texture-preview" id="texturePreview" style="display:none">
+        <img id="textureImg" />
+        <p>Generated texture</p>
+      </div>
+      <div class="stream-output" id="streamOutput"></div>
+      <div class="file-list" id="fileList" style="display:none"></div>
+    </div>
+  </div>
+
+  <script>
+    let selectedEdition = "java";
+    let generatedFiles = [];
+    let currentFileName = "";
+
+    const apiKeyInput = document.getElementById("apiKey");
+    apiKeyInput.value = localStorage.getItem("gemini_api_key") || "";
+    apiKeyInput.addEventListener("input", () => {
+      localStorage.setItem("gemini_api_key", apiKeyInput.value);
+    });
+
+    function selectEdition(edition) {
+      selectedEdition = edition;
+      document.querySelectorAll(".edition-btn").forEach(btn => {
+        btn.classList.toggle("active", btn.dataset.edition === edition);
+      });
+    }
+
+    async function generate() {
+      const itemName = document.getElementById("itemName").value.trim();
+      const fileName = document.getElementById("fileName").value.trim();
+      const itemDescription = document.getElementById("itemDescription").value.trim();
+      const itemAppearance = document.getElementById("itemAppearance").value.trim();
+      const extraDetails = document.getElementById("extraDetails").value.trim();
+      const apiKey = apiKeyInput.value.trim();
+
+      if (!itemName) return alert("Enter an item/block/entity name");
+      if (!fileName) return alert("Enter a file name for the mod");
+      if (!apiKey) return alert("Enter your Google Gemini API key");
+
+      currentFileName = fileName;
+
+      const btn = document.getElementById("generateBtn");
+      const output = document.getElementById("output");
+      const status = document.getElementById("status");
+      const streamOutput = document.getElementById("streamOutput");
+      const fileList = document.getElementById("fileList");
+      const progressFill = document.getElementById("progressFill");
+      const texturePreview = document.getElementById("texturePreview");
+
+      btn.disabled = true;
+      btn.textContent = "Generating...";
+      output.classList.add("visible");
+      fileList.style.display = "none";
+      texturePreview.style.display = "none";
+      streamOutput.textContent = "";
+      status.textContent = "Generating texture...";
+      progressFill.style.width = "10%";
+
+      try {
+        // Step 1: Generate texture image
+        const texResp = await fetch("/api/generate-texture", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ itemName, itemAppearance, apiKey }),
+        });
+
+        if (!texResp.ok) {
+          const err = await texResp.json();
+          throw new Error(err.error || "Texture generation failed");
+        }
+
+        const texData = await texResp.json();
+        if (texData.imageBase64) {
+          texturePreview.style.display = "block";
+          document.getElementById("textureImg").src = "data:image/png;base64," + texData.imageBase64;
+        }
+
+        progressFill.style.width = "30%";
+        status.textContent = "AI is writing your mod...";
+
+        // Step 2: Generate mod files
+        const resp = await fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            itemName, fileName, itemDescription, itemAppearance, extraDetails,
+            edition: selectedEdition, apiKey,
+            textureBase64: texData.imageBase64 || null,
+          }),
+        });
+
+        if (!resp.ok) {
+          const err = await resp.json();
+          throw new Error(err.error || "Request failed");
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        progressFill.style.width = "50%";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop();
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = JSON.parse(line.slice(6));
+
+            if (data.type === "progress") {
+              streamOutput.textContent += data.text;
+              streamOutput.scrollTop = streamOutput.scrollHeight;
+            } else if (data.type === "done") {
+              generatedFiles = data.files;
+              showFiles(generatedFiles);
+              progressFill.style.width = "100%";
+              // Find the item identifier for the give command
+              let giveCmd = "";
+              for (const f of data.files) {
+                if (f.path.includes("/items/") && f.path.endsWith(".json")) {
+                  try {
+                    const def = typeof f.content === "string" ? JSON.parse(f.content) : f.content;
+                    const id = def["minecraft:item"]?.description?.identifier;
+                    if (id) giveCmd = `/give @s ${id}`;
+                  } catch {}
+                }
+              }
+              const hasScripts = data.files.some(f => f.path.includes("/scripts/"));
+              status.innerHTML = `Done! Generated ${generatedFiles.length} files.` +
+                (giveCmd ? `<br><b>Give command:</b> <code>${giveCmd}</code>` : "") +
+                `<br><small>Activate both packs in world settings.${hasScripts ? " Enable Beta APIs experiment." : ""}</small>`;
+            } else if (data.type === "error") {
+              throw new Error(data.error);
+            }
+          }
+        }
+      } catch (err) {
+        status.textContent = "Error: " + err.message;
+        progressFill.style.width = "0%";
+      }
+
+      btn.disabled = false;
+      btn.textContent = "Generate Mod";
+    }
+
+    function showFiles(files) {
+      const fileList = document.getElementById("fileList");
+      fileList.style.display = "block";
+
+      const ext = selectedEdition === "bedrock" ? ".mcaddon" : ".zip";
+
+      fileList.innerHTML = `
+        <div class="file-header">
+          <h3>Generated Files</h3>
+          <button class="download-btn" onclick="downloadZip()">Download ${ext}</button>
+        </div>
+        ${files.map((f, i) => `
+          <div class="file-item" onclick="togglePreview(${i})">
+            ${f.path}
+          </div>
+          <div class="file-preview" id="preview-${i}">
+            <pre>${f.isBinary ? "(binary image file)" : escapeHtml(typeof f.content === "string" ? f.content : JSON.stringify(f.content, null, 2))}</pre>
+          </div>
+        `).join("")}
+      `;
+    }
+
+    function togglePreview(i) {
+      document.getElementById(`preview-${i}`).classList.toggle("open");
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement("div");
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    async function downloadZip() {
+      const modName = currentFileName || "minecraft-mod";
+      const safeName = modName.replace(/[^a-zA-Z0-9_-]/g, "-");
+      const ext = selectedEdition === "bedrock" ? ".mcaddon" : ".zip";
+
+      const resp = await fetch("/api/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: generatedFiles, modName, edition: selectedEdition }),
+      });
+
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = safeName + ext;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  </script>
+</body>
+</html>

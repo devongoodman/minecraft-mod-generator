@@ -454,11 +454,8 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
       dependencies: [{ uuid: bpUuid, version: [1, 0, 0] }],
     };
 
-    // Extract recipe and scripts from AI output
+    // Extract recipe from AI output
     let recipeFile = null;
-    const scriptFiles = [];
-    let hasScripts = false;
-
     for (const f of files) {
       if (f.path.includes("/recipes/") && f.path.endsWith(".json")) {
         try {
@@ -471,23 +468,67 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
           recipeFile = { path: `behavior_pack/recipes/${safeItemName}.json`, content: JSON.stringify(recipe, null, 2) };
         } catch {}
       }
-      // Keep script files from the AI — they handle effects like fire, knockback, etc.
-      if (f.path.includes("/scripts/") && (f.path.endsWith(".js") || f.path.endsWith(".ts"))) {
-        // Fix the item identifier in the script to match our item
-        let scriptContent = typeof f.content === "string" ? f.content : JSON.stringify(f.content);
-        // Replace any item ID references in the script with our correct one
-        scriptContent = scriptContent.replace(/["'][a-z_]+:[a-z_]+["']/g, (match) => {
-          // Only replace if it looks like a custom item ID (not minecraft: namespace)
-          if (!match.includes("minecraft:")) return `"${itemId}"`;
-          return match;
-        });
-        scriptFiles.push({ ...f, content: scriptContent });
-        hasScripts = true;
-      }
     }
 
-    // If scripts exist, add script module and @minecraft/server dependency to BP manifest
+    // Build script server-side for special effects (fire, poison, knockback, etc.)
+    const allText = (itemDescription + " " + extraDetails).toLowerCase();
+    const effects = [];
+
+    if (/set.*on fire|fire damage|burn|ignite|flame|catches fire|sets fire/i.test(allText)) {
+      const fireMatch = allText.match(/(\d+)\s*second/);
+      const fireTicks = (fireMatch ? parseInt(fireMatch[1]) : 5) * 20; // seconds to ticks
+      effects.push(`        target.setOnFire(${Math.ceil(fireTicks / 20)});`);
+    }
+    if (/poison/i.test(allText)) {
+      const durMatch = allText.match(/poison.*?(\d+)\s*second/);
+      const dur = durMatch ? parseInt(durMatch[1]) * 20 : 100;
+      effects.push(`        target.addEffect("poison", ${dur}, { amplifier: 1 });`);
+    }
+    if (/wither/i.test(allText)) {
+      const durMatch = allText.match(/wither.*?(\d+)\s*second/);
+      const dur = durMatch ? parseInt(durMatch[1]) * 20 : 100;
+      effects.push(`        target.addEffect("wither", ${dur}, { amplifier: 1 });`);
+    }
+    if (/slow|slowness/i.test(allText)) {
+      const durMatch = allText.match(/slow.*?(\d+)\s*second/);
+      const dur = durMatch ? parseInt(durMatch[1]) * 20 : 100;
+      effects.push(`        target.addEffect("slowness", ${dur}, { amplifier: 2 });`);
+    }
+    if (/knockback|launch|fling/i.test(allText)) {
+      effects.push(`        const dir = target.location;\n        const src = event.damagingEntity.location;\n        const dx = dir.x - src.x;\n        const dz = dir.z - src.z;\n        const len = Math.sqrt(dx*dx + dz*dz) || 1;\n        target.applyKnockback(dx/len, dz/len, 5, 0.5);`);
+    }
+    if (/heal|lifesteal|life steal/i.test(allText)) {
+      effects.push(`        const source = event.damagingEntity;\n        if (source.getComponent("minecraft:health")) {\n          source.getComponent("minecraft:health").setCurrentValue(Math.min(source.getComponent("minecraft:health").currentValue + 4, source.getComponent("minecraft:health").effectiveMax));\n        }`);
+    }
+    if (/explod|explosion|boom/i.test(allText)) {
+      effects.push(`        target.dimension.createExplosion(target.location, 3, { breaksBlocks: false, causesFire: false });`);
+    }
+    if (/lightning|thunder/i.test(allText)) {
+      effects.push(`        target.dimension.spawnEntity("minecraft:lightning_bolt", target.location);`);
+    }
+
+    const hasScripts = effects.length > 0;
+    let scriptFile = null;
+
     if (hasScripts) {
+      const script = `import { world } from "@minecraft/server";
+
+world.afterEvents.entityHitEntity.subscribe((event) => {
+  const source = event.damagingEntity;
+  const target = event.hitEntity;
+  try {
+    const equip = source.getComponent("minecraft:equippable");
+    if (equip) {
+      const mainhand = equip.getEquipment("Mainhand");
+      if (mainhand && mainhand.typeId === "${itemId}") {
+${effects.join("\n")}
+      }
+    }
+  } catch (e) {}
+});
+`;
+      scriptFile = { path: "behavior_pack/scripts/main.js", content: script };
+
       bpManifest.modules.push({
         type: "script",
         uuid: randomUUID(),
@@ -496,7 +537,7 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
         language: "javascript",
       });
       bpManifest.dependencies = [
-        { module_name: "@minecraft/server", version: "1.17.0-beta" },
+        { module_name: "@minecraft/server", version: "1.16.0" },
       ];
     }
 
@@ -515,15 +556,49 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
     // Add recipe if AI provided one
     if (recipeFile) files.push(recipeFile);
 
-    // Add script files from AI
-    for (const sf of scriptFiles) files.push(sf);
+    // Add script if we built one
+    if (scriptFile) files.push(scriptFile);
 
     // Add texture
     if (textureBase64) {
       files.push({ path: `resource_pack/textures/items/${safeItemName}.png`, content: textureBase64, isBinary: true });
     }
 
-    console.log("Built pack. Item:", itemId, "Damage:", damage, "Durability:", durability, "Scripts:", hasScripts, "Has texture:", !!textureBase64);
+    // === DETAILED BUILD LOG ===
+    console.log("\n========== MOD BUILD REPORT ==========");
+    console.log("Item ID:", itemId);
+    console.log("Display Name:", itemName);
+    console.log("Namespace:", namespace);
+    console.log("");
+    console.log("[DAMAGE]", damage > 7 ? "CUSTOM: " + damage : "DEFAULT: " + damage, damage === 231 ? "(CAPPED AT MAX)" : "");
+    console.log("[DURABILITY]", durability);
+    console.log("[STACK SIZE]", isTool || isArmor ? "1 (weapon/tool)" : "64");
+    console.log("[MENU CATEGORY]", menuCategory, menuGroup ? "/ " + menuGroup : "");
+    console.log("");
+    console.log("[TEXTURE]", textureBase64 ? "YES - PNG included (" + textureBase64.length + " base64 chars)" : "NO - texture generation failed");
+    console.log("[TEXTURE SHORT NAME]", shortName);
+    console.log("[TEXTURE FILE]", `resource_pack/textures/items/${safeItemName}.png`);
+    console.log("[ITEM_TEXTURE.JSON]", "YES - maps", shortName, "->", `textures/items/${safeItemName}`);
+    console.log("");
+    console.log("[RECIPE]", recipeFile ? "YES - from AI" : "NO - AI didn't generate one");
+    console.log("");
+    console.log("[EFFECTS SCAN] Scanning:", JSON.stringify(allText.substring(0, 100)));
+    console.log("  Fire:", /set.*on fire|fire damage|burn|ignite|flame|catches fire|sets fire/i.test(allText) ? "DETECTED" : "not found");
+    console.log("  Poison:", /poison/i.test(allText) ? "DETECTED" : "not found");
+    console.log("  Wither:", /wither/i.test(allText) ? "DETECTED" : "not found");
+    console.log("  Slowness:", /slow|slowness/i.test(allText) ? "DETECTED" : "not found");
+    console.log("  Knockback:", /knockback|launch|fling/i.test(allText) ? "DETECTED" : "not found");
+    console.log("  Lifesteal:", /heal|lifesteal|life steal/i.test(allText) ? "DETECTED" : "not found");
+    console.log("  Explosion:", /explod|explosion|boom/i.test(allText) ? "DETECTED" : "not found");
+    console.log("  Lightning:", /lightning|thunder/i.test(allText) ? "DETECTED" : "not found");
+    console.log("[SCRIPT]", hasScripts ? "YES - " + effects.length + " effect(s)" : "NO - no effects detected");
+    if (hasScripts) {
+      console.log("[SCRIPT CONTENT]\n" + scriptFile.content);
+    }
+    console.log("");
+    console.log("[FILES IN PACK]");
+    files.forEach(f => console.log("  " + f.path + (f.isBinary ? " (binary)" : "")));
+    console.log("======================================\n");
 
     res.write(`data: ${JSON.stringify({ type: "done", files })}\n\n`);
     res.end();

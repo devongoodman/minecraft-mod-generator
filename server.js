@@ -262,7 +262,7 @@ Use "TEXTURE_PLACEHOLDER" as the content for .png files.
 === RECIPE FORMAT (behavior_pack/recipes/<id>.json) ===
 If crafting is described, include a recipe file:
 {
-  "format_version": "1.20.50",
+  "format_version": "1.12",
   "minecraft:recipe_shaped": {
     "description": { "identifier": "mymod:my_sword_recipe" },
     "tags": ["crafting_table"],
@@ -427,7 +427,7 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
     if (menuGroup) menuCategoryObj.group = menuGroup;
 
     const itemDef = {
-      format_version: "1.20.50",
+      format_version: "1.21.10",
       "minecraft:item": {
         description: {
           identifier: itemId,
@@ -443,13 +443,13 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
 
     const bpManifest = {
       format_version: 2,
-      header: { name: `${itemName} BP`, description: itemDescription || `Adds ${itemName}`, uuid: bpUuid, version: [1, 0, 0], min_engine_version: [1, 20, 0] },
+      header: { name: `${itemName} BP`, description: itemDescription || `Adds ${itemName}`, uuid: bpUuid, version: [1, 0, 0], min_engine_version: [1, 21, 0] },
       modules: [{ type: "data", uuid: randomUUID(), version: [1, 0, 0] }],
     };
 
     const rpManifest = {
       format_version: 2,
-      header: { name: `${itemName} RP`, description: itemDescription || `Adds ${itemName}`, uuid: rpUuid, version: [1, 0, 0], min_engine_version: [1, 20, 0] },
+      header: { name: `${itemName} RP`, description: itemDescription || `Adds ${itemName}`, uuid: rpUuid, version: [1, 0, 0], min_engine_version: [1, 21, 0] },
       modules: [{ type: "resources", uuid: randomUUID(), version: [1, 0, 0] }],
       dependencies: [{ uuid: bpUuid, version: [1, 0, 0] }],
     };
@@ -460,35 +460,21 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
       if (f.path.includes("/recipes/") && f.path.endsWith(".json")) {
         try {
           const recipe = typeof f.content === "string" ? JSON.parse(f.content) : f.content;
-          recipe.format_version = "1.20.10";
+          recipe.format_version = "1.12";
           const shaped = recipe["minecraft:recipe_shaped"];
           const shapeless = recipe["minecraft:recipe_shapeless"];
-
           if (shaped) {
             shaped.description = { identifier: `${itemId}_recipe` };
-            if (!shaped.tags || !Array.isArray(shaped.tags)) shaped.tags = ["crafting_table"];
+            shaped.tags = ["crafting_table"];
             shaped.result = { item: itemId, count: 1 };
-            // Ensure pattern is valid 3x3
-            if (shaped.pattern && Array.isArray(shaped.pattern)) {
-              shaped.pattern = shaped.pattern.map(row => {
-                const r = String(row);
-                if (r.length < 3) return r.padEnd(3, " ");
-                if (r.length > 3) return r.substring(0, 3);
-                return r;
-              });
-              while (shaped.pattern.length < 3) shaped.pattern.push("   ");
-              if (shaped.pattern.length > 3) shaped.pattern = shaped.pattern.slice(0, 3);
-            }
           }
-
           if (shapeless) {
             shapeless.description = { identifier: `${itemId}_recipe` };
-            if (!shapeless.tags || !Array.isArray(shapeless.tags)) shapeless.tags = ["crafting_table"];
+            shapeless.tags = ["crafting_table"];
             shapeless.result = { item: itemId, count: 1 };
           }
-
           recipeFile = { path: `behavior_pack/recipes/${safeItemName}.json`, content: JSON.stringify(recipe, null, 2) };
-          console.log("[RECIPE]", shaped ? "shaped" : "shapeless", "Pattern:", JSON.stringify(shaped?.pattern), "Key:", JSON.stringify(shaped?.key), "Result:", itemId);
+          console.log("[RECIPE] Fixed. Result:", itemId, "Pattern:", JSON.stringify(shaped?.pattern), "Key:", JSON.stringify(shaped?.key));
         } catch (e) {
           console.error("[RECIPE ERROR]", e.message);
         }

@@ -132,15 +132,27 @@ app.post("/api/generate", async (req, res) => {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
-  const ai = new GoogleGenAI({ apiKey });
+  if (edition !== "bedrock") {
+    return res.status(400).json({ error: "Only Bedrock Edition is supported" });
+  }
 
-  const itemDetails = `
-Item/Block/Entity Name: ${itemName}
+  const ai = new GoogleGenAI({ apiKey });
+  const isItemMod = itemAppearance && itemAppearance.trim().length > 0;
+
+  console.log("\n[MODE]", isItemMod ? "ITEM MOD" : "GENERAL MOD");
+
+  const itemDetails = isItemMod
+    ? `Item Name: ${itemName}
 File/Mod Name: ${fileName || itemName.toLowerCase().replace(/\s+/g, "-")}
 Description: ${itemDescription || "A custom item"}
-Appearance: ${itemAppearance || "Default Minecraft style"}
+Appearance: ${itemAppearance}
 Additional Details: ${extraDetails || "None"}
-${textureBase64 ? "NOTE: A texture image has already been generated and will be included automatically. Include the correct texture path in your files but do NOT generate image content - just put a placeholder string for any .png file content." : "NOTE: No texture was generated. Do NOT include any .png files."}`;
+${textureBase64 ? "NOTE: A texture image has already been generated and will be included automatically. Include the correct texture path in your files but do NOT generate image content - just put a placeholder string for any .png file content." : "NOTE: No texture was generated. Do NOT include any .png files."}`
+    : `Mod Name: ${itemName}
+File/Mod Name: ${fileName || itemName.toLowerCase().replace(/\s+/g, "-")}
+Description: ${itemDescription || "A custom mod"}
+Additional Details: ${extraDetails || "None"}
+NOTE: This is NOT an item mod. Do NOT generate items or textures. Generate behavior packs, scripts, entities, or whatever is needed for this mod.`;
 
   const systemPrompt = edition === "java"
     ? `You are an expert Minecraft Java Edition mod developer. You generate complete, working mod projects using Forge (1.20.x).
@@ -314,6 +326,42 @@ resource_pack/manifest.json:
 
 Output ONLY the JSON array, no markdown fences, no explanation.`;
 
+  // For non-item mods, use a more flexible prompt
+  const generalBedrockPrompt = `You are an expert Minecraft Bedrock Edition add-on developer. You create all types of mods including custom entities, bosses, gameplay changes, visual effects, and game mechanics using behavior packs, resource packs, and scripts.
+
+When generating an add-on, output ALL files needed as a JSON array of objects with "path" and "content" keys.
+
+You can create:
+- Custom entities/mobs/bosses (behavior_pack/entities/*.json + resource_pack/entity/*.json + resource_pack/models/entity/*.json)
+- Scripts for gameplay changes (behavior_pack/scripts/main.js using @minecraft/server API)
+- Custom particles, animations, sounds
+- Modified game rules and mechanics
+- Loot tables, spawn rules, trade tables
+
+Manifest requirements:
+- behavior_pack/manifest.json and resource_pack/manifest.json are REQUIRED
+- format_version must be integer 2
+- All UUIDs must be valid v4 format (8-4-4-4-12 hex), all unique
+- version and min_engine_version must be integer arrays [1, 20, 0]
+- BP module type: "data" (or "script" if using scripts)
+- RP module type: "resources"
+- RP must have dependency on BP header uuid
+
+If using scripts:
+- Add a script module: { "type": "script", "uuid": "<uuid>", "version": [1,0,0], "entry": "scripts/main.js", "language": "javascript" }
+- Add dependency: { "module_name": "@minecraft/server", "version": "1.16.0" }
+- Use import { world, system } from "@minecraft/server"
+
+Recipe format_version must be "1.12".
+Entity format_version should be "1.20.50".
+File paths must start with behavior_pack/ or resource_pack/.
+Do NOT include any .png files.
+
+Output ONLY the JSON array, no markdown fences, no explanation.`;
+
+  // Pick the right prompt
+  const finalSystemPrompt = edition === "bedrock" && !isItemMod ? generalBedrockPrompt : systemPrompt;
+
   try {
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
@@ -325,7 +373,7 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
       model: "gemini-2.5-flash",
       contents: `Generate a Minecraft ${edition === "java" ? "Java Edition Forge" : "Bedrock Edition"} mod/add-on with these details:\n${itemDetails}`,
       config: {
-        systemInstruction: systemPrompt,
+        systemInstruction: finalSystemPrompt,
         maxOutputTokens: 16000,
       },
     });
@@ -352,7 +400,29 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
       return;
     }
 
-    // === BUILD ALL CRITICAL FILES FROM SCRATCH ===
+    if (!isItemMod) {
+      // === GENERAL MOD MODE ===
+      // Trust the AI output, only fix manifests
+      console.log("\n========== GENERAL MOD BUILD ==========");
+      console.log("Mod:", itemName);
+      console.log("Files from AI:", files.length);
+
+      // Fix manifests with valid UUIDs
+      files = fixManifest(files);
+
+      // Remove any .png placeholders
+      files = files.filter(f => !f.path.endsWith(".png") || f.isBinary);
+
+      console.log("[FILES IN PACK]");
+      files.forEach(f => console.log("  " + f.path));
+      console.log("======================================\n");
+
+      res.write(`data: ${JSON.stringify({ type: "done", files })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // === ITEM MOD MODE - BUILD CRITICAL FILES FROM SCRATCH ===
     // The AI output is only used for the recipe pattern/ingredients.
     // Everything else is built server-side to guarantee correctness.
 
@@ -485,10 +555,12 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
     const allText = (itemDescription + " " + extraDetails).toLowerCase();
     const effects = [];
 
-    if (/set.*on fire|fire damage|burn|ignite|flame|catches fire|sets fire/i.test(allText)) {
+    let hasFire = false;
+    if (/fire|burn|ignite|flame/i.test(allText)) {
+      hasFire = true;
       const fireMatch = allText.match(/(\d+)\s*second/);
-      const fireTicks = (fireMatch ? parseInt(fireMatch[1]) : 5) * 20; // seconds to ticks
-      effects.push(`        target.setOnFire(${Math.ceil(fireTicks / 20)});`);
+      const fireSeconds = fireMatch ? parseInt(fireMatch[1]) : 5;
+      effects.push(`        target.setOnFire(${fireSeconds});`);
     }
     if (/poison/i.test(allText)) {
       const durMatch = allText.match(/poison.*?(\d+)\s*second/);
@@ -522,7 +594,7 @@ Output ONLY the JSON array, no markdown fences, no explanation.`;
     let scriptFile = null;
 
     if (hasScripts) {
-      const script = `import { world } from "@minecraft/server";
+      let script = `import { world, ItemStack } from "@minecraft/server";
 
 world.afterEvents.entityHitEntity.subscribe((event) => {
   const source = event.damagingEntity;
@@ -538,6 +610,37 @@ ${effects.join("\n")}
   } catch (e) {}
 });
 `;
+
+      // Add cooked meat drop handler for fire weapons
+      if (hasFire) {
+        script += `
+const cookedDrops = {
+  "minecraft:cow": "minecraft:cooked_beef",
+  "minecraft:pig": "minecraft:cooked_porkchop",
+  "minecraft:chicken": "minecraft:cooked_chicken",
+  "minecraft:sheep": "minecraft:cooked_mutton",
+  "minecraft:rabbit": "minecraft:cooked_rabbit",
+  "minecraft:cod": "minecraft:cooked_cod",
+  "minecraft:salmon": "minecraft:cooked_salmon",
+};
+
+world.afterEvents.entityDie.subscribe((event) => {
+  try {
+    const dead = event.deadEntity;
+    const killer = event.damageSource?.damagingEntity;
+    if (!killer || !dead) return;
+    const equip = killer.getComponent("minecraft:equippable");
+    if (!equip) return;
+    const mainhand = equip.getEquipment("Mainhand");
+    if (!mainhand || mainhand.typeId !== "${itemId}") return;
+    const cooked = cookedDrops[dead.typeId];
+    if (cooked) {
+      dead.dimension.spawnItem(new ItemStack(cooked, 1), dead.location);
+    }
+  } catch (e) {}
+});
+`;
+      }
       scriptFile = { path: "behavior_pack/scripts/main.js", content: script };
 
       bpManifest.modules.push({
@@ -594,7 +697,7 @@ ${effects.join("\n")}
     console.log("[RECIPE]", recipeFile ? "YES - from AI" : "NO - AI didn't generate one");
     console.log("");
     console.log("[EFFECTS SCAN] Scanning:", JSON.stringify(allText.substring(0, 100)));
-    console.log("  Fire:", /set.*on fire|fire damage|burn|ignite|flame|catches fire|sets fire/i.test(allText) ? "DETECTED" : "not found");
+    console.log("  Fire:", /fire|burn|ignite|flame/i.test(allText) ? "DETECTED" : "not found");
     console.log("  Poison:", /poison/i.test(allText) ? "DETECTED" : "not found");
     console.log("  Wither:", /wither/i.test(allText) ? "DETECTED" : "not found");
     console.log("  Slowness:", /slow|slowness/i.test(allText) ? "DETECTED" : "not found");

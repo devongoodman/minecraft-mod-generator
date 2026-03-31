@@ -273,7 +273,7 @@
 <body>
   <div class="container">
     <h1>Minecraft Mod Generator</h1>
-    <p class="subtitle">Fill in the details and AI will build your mod</p>
+    <p class="subtitle">Fill in the details and AI will build your Bedrock add-on</p>
 
     <div class="api-key-section">
       <label>Google Gemini API Key (stored locally in your browser only)</label>
@@ -282,38 +282,35 @@
 
     <div class="form-card">
       <div class="edition-toggle">
-        <button class="edition-btn active" data-edition="java" onclick="selectEdition('java')">
-          <span class="icon">&#9881;</span> Java Edition
-        </button>
-        <button class="edition-btn" data-edition="bedrock" onclick="selectEdition('bedrock')">
+        <button class="edition-btn active" data-edition="bedrock" type="button">
           <span class="icon">&#9878;</span> Bedrock Edition
         </button>
       </div>
 
       <div class="field-group">
-        <label>Item / Block / Entity Name</label>
-        <input type="text" id="itemName" placeholder="e.g. Ruby Sword, Ender Staff, Copper Golem" />
+        <label>Mod Name</label>
+        <input type="text" id="itemName" placeholder="e.g. Ruby Sword, Realistic Water, Dragon Boss, Double Jump" />
       </div>
 
       <div class="field-group">
-        <label>File Name (what the mod/add-on file is called)</label>
-        <input type="text" id="fileName" placeholder="e.g. ruby-tools, ender-magic, copper-mobs" />
+        <label>File Name (what the mod file is called)</label>
+        <input type="text" id="fileName" placeholder="e.g. ruby-tools, realistic-water, dragon-boss" />
       </div>
 
       <div class="field-group">
-        <label>Description (what it does, how it's crafted)</label>
-        <textarea id="itemDescription" placeholder="e.g. A powerful sword crafted from ruby gems and blaze rods. Crafted with 2 ruby gems on top and 1 blaze rod on the bottom in the crafting table."></textarea>
+        <label>Description (what does this mod do?)</label>
+        <textarea id="itemDescription" placeholder="e.g. A powerful sword crafted from 2 diamonds and 1 stick&#10;e.g. Makes water look realistic with wave animations&#10;e.g. Adds a new boss that spawns in the nether with 500 health"></textarea>
       </div>
 
       <div class="field-group">
-        <label>Appearance (how the item/block/entity should look)</label>
-        <textarea id="itemAppearance" placeholder="e.g. A bright red sword with a golden hilt and glowing enchantment particles. The blade has a diamond-shaped ruby embedded in it."></textarea>
+        <label>Item Appearance (leave empty if this isn't an item)</label>
+        <textarea id="itemAppearance" placeholder="Fill this in ONLY if your mod is a custom item/weapon/tool/armor.&#10;e.g. A bright red sword with a golden hilt&#10;&#10;Leave empty for mods that change gameplay, visuals, mobs, etc."></textarea>
       </div>
 
       <div class="field-group">
-        <label>Additional Details (damage, effects, behavior, etc.)</label>
-        <textarea id="extraDetails" placeholder="e.g. Deals 12 damage, sets enemies on fire for 5 seconds, has 500 durability, gives the player fire resistance when held"></textarea>
-        <p style="color:#777;font-size:0.75rem;margin-top:0.35rem;">Note: Bedrock damage cap is 231.</p>
+        <label>Additional Details (stats, effects, behavior, etc.)</label>
+        <textarea id="extraDetails" placeholder="e.g. Deals 12 damage, sets enemies on fire for 5 seconds&#10;e.g. Boss has 3 attack phases and drops a special item&#10;e.g. Player moves 2x faster and can double jump"></textarea>
+        <p style="color:#777;font-size:0.75rem;margin-top:0.35rem;">Note: Item damage cap is 231 on Bedrock.</p>
       </div>
 
       <button class="generate-btn" id="generateBtn" onclick="generate()">Generate Mod</button>
@@ -333,7 +330,7 @@
   </div>
 
   <script>
-    let selectedEdition = "java";
+    let selectedEdition = "bedrock";
     let generatedFiles = [];
     let currentFileName = "";
 
@@ -343,13 +340,6 @@
       localStorage.setItem("gemini_api_key", apiKeyInput.value);
     });
 
-    function selectEdition(edition) {
-      selectedEdition = edition;
-      document.querySelectorAll(".edition-btn").forEach(btn => {
-        btn.classList.toggle("active", btn.dataset.edition === edition);
-      });
-    }
-
     async function generate() {
       const itemName = document.getElementById("itemName").value.trim();
       const fileName = document.getElementById("fileName").value.trim();
@@ -358,7 +348,7 @@
       const extraDetails = document.getElementById("extraDetails").value.trim();
       const apiKey = apiKeyInput.value.trim();
 
-      if (!itemName) return alert("Enter an item/block/entity name");
+      if (!itemName) return alert("Enter a mod name");
       if (!fileName) return alert("Enter a file name for the mod");
       if (!apiKey) return alert("Enter your Google Gemini API key");
 
@@ -378,26 +368,32 @@
       fileList.style.display = "none";
       texturePreview.style.display = "none";
       streamOutput.textContent = "";
-      status.textContent = "Generating texture...";
       progressFill.style.width = "10%";
 
+      const isItemMod = itemAppearance.length > 0;
+
       try {
-        // Step 1: Generate texture image
-        const texResp = await fetch("/api/generate-texture", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ itemName, itemAppearance, apiKey }),
-        });
+        let texData = { imageBase64: null };
 
-        if (!texResp.ok) {
-          const err = await texResp.json();
-          throw new Error(err.error || "Texture generation failed");
-        }
+        // Only generate texture if this is an item mod
+        if (isItemMod) {
+          status.textContent = "Generating texture...";
+          const texResp = await fetch("/api/generate-texture", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ itemName, itemAppearance, apiKey }),
+          });
 
-        const texData = await texResp.json();
-        if (texData.imageBase64) {
-          texturePreview.style.display = "block";
-          document.getElementById("textureImg").src = "data:image/png;base64," + texData.imageBase64;
+          if (!texResp.ok) {
+            const err = await texResp.json();
+            throw new Error(err.error || "Texture generation failed");
+          }
+
+          texData = await texResp.json();
+          if (texData.imageBase64) {
+            texturePreview.style.display = "block";
+            document.getElementById("textureImg").src = "data:image/png;base64," + texData.imageBase64;
+          }
         }
 
         progressFill.style.width = "30%";
